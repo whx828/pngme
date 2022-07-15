@@ -1,23 +1,121 @@
-use std::fmt;
-use std::io::{BufRead, BufReader, Read};
+use std::{
+    convert::TryFrom,
+    fmt::{Display, Formatter, Result as FmtResult},
+    io::{BufRead, BufReader, Read},
+};
 
-use crate::chunk::Chunk;
-use crate::{Error, Result};
+use crate::{chunk::Chunk, Error, Result};
 
-#[derive(Debug)]
 pub struct Png {
-    head: [u8; 8],
+    header: [u8; 8],
     chunks: Vec<Chunk>,
+}
+
+impl Png {
+    pub const STANDARD_HEADER: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
+
+    pub fn from_chunks(chunks: Vec<Chunk>) -> Self {
+        Self {
+            header: Self::STANDARD_HEADER,
+            chunks,
+        }
+    }
+
+    pub fn header(&self) -> &[u8; 8] {
+        &self.header
+    }
+
+    pub fn chunks(&self) -> &[Chunk] {
+        &self.chunks
+    }
+
+    pub fn chunk_by_type(&self, chunk_type: &str) -> Option<&Chunk> {
+        self.chunks
+            .iter()
+            .find(|chunk| chunk.chunk_type().to_string().as_str() == chunk_type)
+    }
+
+    pub fn append_chunk(&mut self, chunk: Chunk) {
+        self.chunks.push(chunk)
+    }
+
+    // 妙
+    pub fn remove_chunk(&mut self, chunk_type: &str) -> Result<Chunk> {
+        self.chunks
+            .iter()
+            .position(|chunk| chunk.chunk_type().to_string().as_str() == chunk_type)
+            .map(|index| self.chunks.remove(index))
+            .ok_or_else(|| "non-existent chunk".into())
+
+        // https://doc.rust-lang.org/std/iter/trait.Iterator.html#method.position
+        // fn position<P>(&mut self, predicate: P) -> Option<usize>
+        // where
+        //     P: FnMut(Self::Item) -> bool, 
+
+        // Searches for an element in an iterator, returning its index.
+        // 在迭代器中搜索元素，返回其索引。
+        // position() takes a closure that returns true or false. It applies this closure to each element of the iterator, 
+        // position() 接受一个返回 true 或 false 的闭包。它将这个闭包应用于迭代器的每个元素，
+        // and if one of them returns true, then position() returns Some(index). 
+        // 如果其中一个返回 true，则 position() 返回 Some(index)。
+        // If all of them return false, it returns None.
+        // 如果它们都返回 false，则返回 None。
+        // position() is short-circuiting; in other words, it will stop processing as soon as it finds a true.
+        // position() 是短路操作；换句话说，它会在找到一个 true 后立即停止处理。
+        
+        // Overflow Behavior
+        // 溢出行为
+        // The method does no guarding against overflows, 
+        // 该方法没有防止溢出，
+        // so if there are more than usize::MAX non-matching elements, 
+        // 所以如果有超过 usize::MAX 不匹配的元素，
+        // it either produces the wrong result or panics. 
+        // 它会产生错误的结果或恐慌。
+        // If debug assertions are enabled, a panic is guaranteed.
+        // 如果启用了调试断言，则保证会出现恐慌。
+        
+        // Panics
+        // This function might panic if the iterator has more than usize::MAX non-matching elements.
+        // 如果迭代器有多个 usize::MAX 不匹配的元素，此函数可能会出现恐慌。
+    }
+
+    // 妙
+    // 先处理每一个 chunk，把单个 chunk 变成 Vec<u8>
+    // 然后把多个 chunk 转换成的 Vec<u8> 集合在一起变成迭代器
+    // 之后通过 chain 把 header 连起来完成最后的 Vec<u8>
+    pub fn as_bytes(&self) -> Vec<u8> {
+        let chunks = self
+            .chunks
+            .iter()
+            .flat_map(|chunk| chunk.as_bytes().into_iter());
+
+        self.header.iter().copied().chain(chunks).collect()
+
+        // fn flat_map<U, F>(self, f: F) -> FlatMap<Self, U, F>
+        // where
+        //     U: IntoIterator,
+        //     F: FnMut(Self::Item) -> U, 
+
+        // Creates an iterator that works like map, but flattens nested structure.
+        // 创建一个像 map 一样工作的迭代器，但会扁平化嵌套结构。
+        // The map adapter is very useful, but only when the closure argument produces values. If it produces an iterator instead, there’s an extra layer of indirection. flat_map() will remove this extra layer on its own.
+        // map 仅当闭包参数产生值时才有用。如果它产生一个迭代器，那么就会有一个额外的间接层。flat_map() 将自行删除这个额外的层。
+        // You can think of flat_map(f) as the semantic equivalent of mapping, and then flattening as in map(f).flatten().
+        // flat_map() 的另一种思考方式：map 的闭包为每个元素返回一个项目，而 flat_map() 的闭包为每个元素返回一个迭代器。
+        // Another way of thinking about flat_map(): map’s closure returns one item for each element, and flat_map()’s closure returns an iterator for each element.
+        // 您可以将 flat_map(f) 视为映射的语义等价物，然后像 map(f).flatten() 中那样进行展平。
+    }
 }
 
 impl TryFrom<&[u8]> for Png {
     type Error = Error;
+
     fn try_from(value: &[u8]) -> Result<Self> {
         let mut reader = BufReader::new(value);
-        let mut head = [0; 8];
+        let mut header = [0; 8];
 
-        reader.read_exact(&mut head)?;
-        if head != Self::STANDARD_HEADER {
+        reader.read_exact(&mut header)?;
+        if header != Self::STANDARD_HEADER {
             return Err("invalid png".into());
         }
 
@@ -26,120 +124,29 @@ impl TryFrom<&[u8]> for Png {
             chunks.push(Chunk::read_chunk(&mut reader)?);
         }
 
-        Ok(Self { head, chunks })
+        Ok(Self { header, chunks })
     }
 }
 
-impl fmt::Display for Png {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{:?} {:?}", self.head, self.chunks)
-    }
-}
-
-#[allow(dead_code)]
-impl Png {
-    const STANDARD_HEADER: [u8; 8] = [137, 80, 78, 71, 13, 10, 26, 10];
-
-    pub fn from_chunks(chunks: Vec<Chunk>) -> Png {
-        Png {
-            head: Self::STANDARD_HEADER,
-            chunks,
-        }
-    }
-
-    pub fn append_chunk(&mut self, chunk: Chunk) {
-        self.chunks.push(chunk)
-    }
-
-    pub fn remove_chunk(&mut self, chunk_type: &str) -> Result<Chunk> {
-        let index = self
-            .chunks
-            .iter()
-            .position(|i| {
-                String::from_utf8(i.chunk_type.bytes().to_vec()).unwrap() == chunk_type.to_string()
-            })
-            .unwrap();
-        let chunk = self.chunks.remove(index);
-        Ok(chunk)
-
-        // 删除所有符合条件的 chunk
-        // self.chunks.retain(|i| String::from_utf8(i.chunk_type.bytes().to_vec()).unwrap() != chunk_type.to_string());
-    }
-
-    fn header(&self) -> &[u8; 8] {
-        &self.head
-    }
-
-    fn chunks(&self) -> &[Chunk] {
-        &self.chunks
-    }
-
-    pub fn chunk_by_type(&self, chunk_type: &str) -> Option<&Chunk> {
-        for i in &self.chunks {
-            if String::from_utf8(i.chunk_type.bytes().to_vec()).unwrap() == chunk_type.to_string() {
-                return Some(&i);
-            }
-        }
-        None
-    }
-
-    pub fn as_bytes(&self) -> Vec<u8> {
-        let mut vec: Vec<u8> = Vec::new();
-
-        for i in self.head {
-            vec.push(i);
-        }
-        // vec.push(b'I'); // 73
-        // vec.push(b'H'); // 72
-        // vec.push(b'D'); // 68
-        // vec.push(b'R'); // 82
-
-        for i in &self.chunks {
-            for x in i.as_bytes() {
-                vec.push(x);
-            }
-        }
-
-        // vec.push(b'I'); // 73
-        // vec.push(b'E'); // 69
-        // vec.push(b'N'); // 78
-        // vec.push(b'D'); // 68
-
-        vec
+impl Display for Png {
+    fn fmt(&self, f: &mut Formatter<'_>) -> FmtResult {
+        let chunks: Vec<_> = self.chunks.iter().map(ToString::to_string).collect();
+        write!(
+            f,
+            "Png {{ header: {:?}, chunks: [{}] }}",
+            self.header,
+            chunks.join(", ")
+        )
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chunk::Chunk;
+
+    use std::str::FromStr;
+
     use crate::chunk_type::ChunkType;
-    use std::convert::TryFrom;
-    // use std::str::FromStr;
-
-    fn testing_chunks() -> Vec<Chunk> {
-        let mut chunks = Vec::new();
-
-        chunks.push(chunk_from_strings("FrSt", "I am the first chunk").unwrap());
-        chunks.push(chunk_from_strings("miDl", "I am another chunk").unwrap());
-        chunks.push(chunk_from_strings("LASt", "I am the last chunk").unwrap());
-
-        chunks
-    }
-
-    fn testing_png() -> Png {
-        let chunks = testing_chunks();
-        Png::from_chunks(chunks)
-    }
-
-    fn chunk_from_strings(chunk_type: &str, data: &str) -> Result<Chunk> {
-        use std::str::FromStr;
-
-        let chunk_type = ChunkType::from_str(chunk_type)?;
-        let data: Vec<u8> = data.bytes().collect();
-
-        Ok(Chunk::new(chunk_type, data))
-    }
 
     #[test]
     fn test_from_chunks() {
@@ -151,59 +158,45 @@ mod tests {
 
     #[test]
     fn test_valid_from_bytes() {
-        let chunk_bytes: Vec<u8> = testing_chunks()
-            .into_iter()
-            .flat_map(|chunk| chunk.as_bytes())
-            .collect();
-
-        let bytes: Vec<u8> = Png::STANDARD_HEADER
+        let chunk_bytes: Vec<_> = testing_chunks().iter().flat_map(Chunk::as_bytes).collect();
+        let bytes: Vec<_> = Png::STANDARD_HEADER
             .iter()
             .chain(chunk_bytes.iter())
             .copied()
             .collect();
 
         let png = Png::try_from(bytes.as_ref());
-
         assert!(png.is_ok());
     }
 
     #[test]
     fn test_invalid_header() {
-        let chunk_bytes: Vec<u8> = testing_chunks()
-            .into_iter()
-            .flat_map(|chunk| chunk.as_bytes())
-            .collect();
-
-        let bytes: Vec<u8> = [13, 80, 78, 71, 13, 10, 26, 10]
+        let chunk_bytes: Vec<_> = testing_chunks().iter().flat_map(Chunk::as_bytes).collect();
+        let bytes: Vec<_> = [13, 80, 78, 71, 13, 10, 26, 10]
             .iter()
             .chain(chunk_bytes.iter())
             .copied()
             .collect();
 
         let png = Png::try_from(bytes.as_ref());
-
         assert!(png.is_err());
     }
 
     #[test]
     fn test_invalid_chunk() {
-        let mut chunk_bytes: Vec<u8> = testing_chunks()
-            .into_iter()
-            .flat_map(|chunk| chunk.as_bytes())
-            .collect();
+        let mut chunk_bytes: Vec<_> = testing_chunks().iter().flat_map(Chunk::as_bytes).collect();
 
         #[rustfmt::skip]
         let mut bad_chunk = vec![
-            0, 0, 0, 5,         // length
-            32, 117, 83, 116,   // Chunk Type (bad)
+            0, 0, 0, 5,         // Length
+            32, 117, 83, 116,   // Chunk Type (Bad)
             65, 64, 65, 66, 67, // Data
-            1, 2, 3, 4, 5       // CRC (bad)
+            1, 2, 3, 4, 5       // CRC (Bad)
         ];
 
         chunk_bytes.append(&mut bad_chunk);
 
         let png = Png::try_from(chunk_bytes.as_ref());
-
         assert!(png.is_err());
     }
 
@@ -211,6 +204,7 @@ mod tests {
     fn test_list_chunks() {
         let png = testing_png();
         let chunks = png.chunks();
+
         assert_eq!(chunks.len(), 3);
     }
 
@@ -218,6 +212,7 @@ mod tests {
     fn test_chunk_by_type() {
         let png = testing_png();
         let chunk = png.chunk_by_type("FrSt").unwrap();
+
         assert_eq!(&chunk.chunk_type().to_string(), "FrSt");
         assert_eq!(&chunk.data_as_string().unwrap(), "I am the first chunk");
     }
@@ -226,6 +221,7 @@ mod tests {
     fn test_append_chunk() {
         let mut png = testing_png();
         png.append_chunk(chunk_from_strings("TeSt", "Message").unwrap());
+
         let chunk = png.chunk_by_type("TeSt").unwrap();
         assert_eq!(&chunk.chunk_type().to_string(), "TeSt");
         assert_eq!(&chunk.data_as_string().unwrap(), "Message");
@@ -236,43 +232,12 @@ mod tests {
         let mut png = testing_png();
         png.append_chunk(chunk_from_strings("TeSt", "Message").unwrap());
         png.remove_chunk("TeSt").unwrap();
+
         let chunk = png.chunk_by_type("TeSt");
         assert!(chunk.is_none());
     }
 
-    #[test]
-    fn test_png_from_image_file() {
-        let png = Png::try_from(&PNG_FILE[..]);
-        assert!(png.is_ok());
-    }
-
-    #[test]
-    fn test_as_bytes() {
-        let png = Png::try_from(&PNG_FILE[..]).unwrap();
-        let actual = png.as_bytes();
-        let expected: Vec<u8> = PNG_FILE.iter().copied().collect();
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn test_png_trait_impls() {
-        let chunk_bytes: Vec<u8> = testing_chunks()
-            .into_iter()
-            .flat_map(|chunk| chunk.as_bytes())
-            .collect();
-
-        let bytes: Vec<u8> = Png::STANDARD_HEADER
-            .iter()
-            .chain(chunk_bytes.iter())
-            .copied()
-            .collect();
-
-        let png: Png = TryFrom::try_from(bytes.as_ref()).unwrap();
-
-        let _png_string = format!("{}", png);
-    }
-
-    // This is the raw bytes for a shrunken version of the `dice.png` image on Wikipedia
+    // This is the raw bytes for a shrunken version of the `dice.png` image on Wikipedia.
     const PNG_FILE: [u8; 4803] = [
         137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 50, 0, 0, 0, 50, 8,
         6, 0, 0, 0, 30, 63, 136, 177, 0, 0, 0, 1, 115, 82, 71, 66, 0, 174, 206, 28, 233, 0, 0, 0,
@@ -518,4 +483,54 @@ mod tests {
         202, 28, 31, 66, 176, 235, 16, 0, 0, 0, 3, 82, 117, 83, 116, 104, 101, 121, 158, 176, 245,
         160, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130,
     ];
+
+    #[test]
+    fn test_png_from_image_file() {
+        let png = Png::try_from(&PNG_FILE[..]);
+        assert!(png.is_ok());
+    }
+
+    #[test]
+    fn test_as_bytes() {
+        let png = Png::try_from(&PNG_FILE[..]).unwrap();
+        let actual = png.as_bytes();
+        let expected = PNG_FILE.to_vec();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_png_trait_impls() {
+        let chunk_bytes: Vec<_> = testing_chunks().iter().flat_map(Chunk::as_bytes).collect();
+        let bytes: Vec<_> = Png::STANDARD_HEADER
+            .iter()
+            .chain(chunk_bytes.iter())
+            .copied()
+            .collect();
+
+        let png: Png = TryFrom::try_from(bytes.as_ref()).unwrap();
+        _ = format!("{}", png);
+    }
+
+    fn testing_png() -> Png {
+        let chunks = testing_chunks();
+        Png::from_chunks(chunks)
+    }
+
+    fn testing_chunks() -> Vec<Chunk> {
+        let chunks = vec![
+            chunk_from_strings("FrSt", "I am the first chunk").unwrap(),
+            chunk_from_strings("miDl", "I am another chunk").unwrap(),
+            chunk_from_strings("LASt", "I am the last chunk").unwrap(),
+        ];
+
+        chunks
+    }
+
+    fn chunk_from_strings(chunk_type: &str, data: &str) -> Result<Chunk> {
+        let chunk_type = ChunkType::from_str(chunk_type)?;
+        let data = data.bytes().collect();
+
+        Ok(Chunk::new(chunk_type, data))
+    }
 }
